@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#18251f">
+  <title>Arcane Labyrinth</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="game-shell">
+    <header class="topbar">
+      <a class="wordmark" href="/" aria-label="Arcane Labyrinth home">AL<span>.</span></a>
+      <div class="game-title"><span class="eyebrow">A HOT-SEAT MAZE DUEL</span><h1>Arcane Labyrinth</h1></div>
+      <button class="icon-button" id="new-game" type="button" title="Start a new game" aria-label="Start a new game">↻</button>
+    </header>
+
+    <section class="game-layout" aria-label="Game">
+      <section class="play-area" aria-label="Labyrinth board">
+        <div class="board-heading"><div><span class="eyebrow">THE OLD QUARTER</span><h2>Stone maze</h2></div><div class="turn-marker" id="turn-marker">Loading...</div></div>
+        <div class="board-frame"><div class="board" id="board" role="grid" aria-label="Maze"></div></div>
+        <div class="board-footer"><span><i class="legend-dot aster"></i>Aster</span><span><i class="legend-dot bramble"></i>Bramble</span><span><i class="legend-dot relic"></i>Relic</span><span><i class="legend-dot home"></i>Home</span></div>
+      </section>
+
+      <aside class="side-panel" aria-label="Game controls and status">
+        <section class="active-panel"><span class="eyebrow">ACTIVE WIZARD</span><h2 id="active-name">Loading...</h2><div class="resource-row"><span>Health</span><span id="active-health" class="health-pips"></span></div><div class="resource-row"><span>Arc Spark</span><span id="active-mana" class="mana-mark">Ready</span></div><div class="resource-row"><span>Actions</span><span id="active-actions" class="action-count">3</span></div></section>
+
+        <section class="controls"><div class="section-heading"><h3>Choose an action</h3><span class="eyebrow">YOUR TURN</span></div>
+          <div class="control-row"><div class="direction-pad" aria-label="Move direction"><button data-direction="up" aria-label="Move up" title="Move up">↑</button><button data-direction="left" aria-label="Move left" title="Move left">←</button><button data-direction="down" aria-label="Move down" title="Move down">↓</button><button data-direction="right" aria-label="Move right" title="Move right">→</button></div><button class="action-button move-button" id="move-action" type="button">Move</button></div>
+          <button class="action-button spell-button" id="cast-action" type="button"><span><b>Arc Spark</b><small>Damage and push in a clear line</small></span><span class="spell-cost">1 MP</span></button>
+          <div class="split-actions"><button class="action-button" id="collect-action" type="button">Collect relic</button><button class="action-button" id="deliver-action" type="button">Deliver</button></div>
+          <button class="end-turn" id="end-turn" type="button">End turn <span>↗</span></button>
+          <p class="feedback" id="feedback" role="status" aria-live="polite"></p>
+        </section>
+
+        <section class="scoreboard"><div class="section-heading"><h3>Relic tally</h3><span class="eyebrow">FIRST TO 2</span></div><div id="player-list"></div></section>
+        <section class="chronicle"><div class="section-heading"><h3>Chronicle</h3><span class="eyebrow">RECENT EVENTS</span></div><ol id="event-log"></ol></section>
+      </aside>
+    </section>
+    <footer class="page-footer"><span>Two players · three actions per turn</span><span>Local game · original rules</span></footer>
+  </main>
+  <dialog id="winner-dialog"><div class="winner-content"><span class="eyebrow">THE LABYRINTH HAS CHOSEN</span><h2 id="winner-title">A wizard prevails</h2><p>Two relics returned. The old quarter falls quiet.</p><button class="action-button" id="play-again" type="button">Play again</button></div></dialog>
+  <script src="/game.js" defer></script>
+</body>
+</html>
