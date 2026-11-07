@@ -3,6 +3,7 @@ const feedbackElement = document.querySelector('#feedback');
 const directionButtons = [...document.querySelectorAll('[data-direction]')];
 let state = null;
 let selectedDirection = 'up';
+let requestInFlight = false;
 
 function currentPlayer() {
   return state.players[state.currentPlayer];
@@ -18,8 +19,12 @@ function render() {
   if (!state) return;
   const active = currentPlayer();
   const isOver = state.winner >= 0;
-  document.querySelector('#turn-marker').textContent = isOver ? 'DUEL COMPLETE' : `${active.name.toUpperCase()} TO MOVE`;
+  const isMyTurn = state.you === state.currentPlayer;
+  document.querySelector('#turn-marker').textContent = isOver ? 'DUEL COMPLETE' :
+    isMyTurn ? `${active.name.toUpperCase()} TO MOVE` : `WAITING FOR ${active.name.toUpperCase()}`;
   document.querySelector('#active-name').textContent = active.name;
+  document.querySelector('#client-status').textContent =
+    `You are ${state.players[state.you].name} · ${state.playersJoined}/2 players joined`;
   document.querySelector('#active-health').innerHTML = Array.from({ length: 3 }, (_, index) =>
     `<i class="health-pip ${index < active.hp ? 'filled' : ''}"></i>`).join('');
   document.querySelector('#active-mana').textContent = active.mana ? 'Ready' : 'Spent';
@@ -56,11 +61,11 @@ function render() {
       <span>${player.name}</span><small>${player.carried} carried</small><span class="score-value">${player.score} / 2</span>
     </div>`).join('');
   document.querySelector('#event-log').innerHTML = [...state.log].reverse().map((entry) => `<li>${escapeHtml(entry)}</li>`).join('');
-  document.querySelector('#move-action').disabled = isOver || state.actionsLeft < 1;
-  document.querySelector('#cast-action').disabled = isOver || state.actionsLeft < 1 || active.mana < 1;
-  document.querySelector('#collect-action').disabled = isOver || state.actionsLeft < 1 || active.carried >= 2;
-  document.querySelector('#deliver-action').disabled = isOver || state.actionsLeft < 1 || active.carried < 1 || active.x !== active.homeX || active.y !== active.homeY;
-  document.querySelector('#end-turn').disabled = isOver;
+  document.querySelector('#move-action').disabled = isOver || !isMyTurn || state.actionsLeft < 1;
+  document.querySelector('#cast-action').disabled = isOver || !isMyTurn || state.actionsLeft < 1 || active.mana < 1;
+  document.querySelector('#collect-action').disabled = isOver || !isMyTurn || state.actionsLeft < 1 || active.carried >= 2;
+  document.querySelector('#deliver-action').disabled = isOver || !isMyTurn || state.actionsLeft < 1 || active.carried < 1 || active.x !== active.homeX || active.y !== active.homeY;
+  document.querySelector('#end-turn').disabled = isOver || !isMyTurn;
   directionButtons.forEach((button) => button.classList.toggle('selected', button.dataset.direction === selectedDirection));
 
   const dialog = document.querySelector('#winner-dialog');
@@ -72,16 +77,21 @@ function render() {
   }
 }
 
-async function request(path, options = {}) {
-  feedbackElement.textContent = '';
+async function request(path, options = {}, quiet = false) {
+  if (requestInFlight) return;
+  requestInFlight = true;
+  if (!quiet) feedbackElement.textContent = '';
   try {
     const response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'The action could not be completed.');
     state = result;
+    if (quiet && feedbackElement.textContent === 'Connection lost. Retrying...') feedbackElement.textContent = '';
     render();
   } catch (error) {
-    feedbackElement.textContent = error.message || 'Could not reach the game server.';
+    feedbackElement.textContent = quiet ? 'Connection lost. Retrying...' : error.message || 'Could not reach the game server.';
+  } finally {
+    requestInFlight = false;
   }
 }
 
@@ -90,7 +100,7 @@ async function act(type, extra = {}) {
 }
 
 function moveTo(x, y) {
-  if (!state || state.winner >= 0) return;
+  if (!state || state.winner >= 0 || state.you !== state.currentPlayer) return;
   const player = currentPlayer();
   const dx = x - player.x;
   const dy = y - player.y;
@@ -115,3 +125,6 @@ document.querySelector('#play-again').addEventListener('click', () => {
 });
 
 request('/api/state');
+window.setInterval(() => {
+  if (!requestInFlight) request('/api/state', {}, true);
+}, 1000);

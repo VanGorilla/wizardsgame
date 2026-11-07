@@ -8,8 +8,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #define MAP_WIDTH 9
@@ -60,6 +62,8 @@ static const char *const map_rows[MAP_HEIGHT] = {
 
 static const char *const player_names[PLAYER_COUNT] = {"Aster", "Bramble"};
 static Game game;
+static bool player_claimed[PLAYER_COUNT];
+static pthread_mutex_t game_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void add_log(const char *message) {
     if (game.log_count == LOG_COUNT) {
@@ -116,7 +120,7 @@ static void escape_json(const char *input, char *output, size_t capacity) {
     output[used] = '\0';
 }
 
-static void make_state_json(char *output, size_t capacity) {
+static void make_state_json(char *output, size_t capacity, int client_player) {
     size_t used = 0;
     int written = snprintf(output, capacity,
         "{\"map\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"],\"players\":[",
@@ -147,8 +151,9 @@ static void make_state_json(char *output, size_t capacity) {
     }
 
     written = snprintf(output + used, capacity - used,
-        "],\"currentPlayer\":%d,\"actionsLeft\":%d,\"winner\":%d,\"log\":[",
-        game.current_player, game.actions_left, game.winner);
+        "],\"currentPlayer\":%d,\"actionsLeft\":%d,\"winner\":%d,\"you\":%d,\"playersJoined\":%d,\"log\":[",
+        game.current_player, game.actions_left, game.winner, client_player,
+        (int)player_claimed[0] + (int)player_claimed[1]);
     if (written < 0 || (size_t)written >= capacity - used) return;
     used += (size_t)written;
     for (int i = 0; i < game.log_count; i++) {
@@ -178,12 +183,13 @@ static bool read_json_string(const char *json, const char *key, char *value, siz
     return *cursor == '"';
 }
 
-static void send_response(int client, int status, const char *status_text,
-                          const char *content_type, const char *body, size_t body_length) {
+static void send_response_with_headers(int client, int status, const char *status_text,
+                                       const char *content_type, const char *extra_headers,
+                                       const char *body, size_t body_length) {
     char header[512];
     int header_length = snprintf(header, sizeof(header),
-        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",
-        status, status_text, content_type, body_length);
+        "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n%s\r\n",
+        status, status_text, content_type, body_length, extra_headers);
     if (header_length <= 0 || (size_t)header_length >= sizeof(header)) return;
     (void)send(client, header, (size_t)header_length, 0);
     size_t sent = 0;
@@ -194,14 +200,75 @@ static void send_response(int client, int status, const char *status_text,
     }
 }
 
+static void send_response(int client, int status, const char *status_text,
+                          const char *content_type, const char *body, size_t body_length) {
+    send_response_with_headers(client, status, status_text, content_type, "", body, body_length);
+}
+
 static void send_json(int client, int status, const char *status_text, const char *body) {
     send_response(client, status, status_text, "application/json; charset=utf-8", body, strlen(body));
 }
 
-static void send_state(int client) {
+static void send_state(int client, int client_player, bool set_cookie) {
     char body[RESPONSE_CAPACITY];
-    make_state_json(body, sizeof(body));
-    send_json(client, 200, "OK", body);
+    pthread_mutex_lock(&game_mutex);
+    make_state_json(body, sizeof(body), client_player);
+    pthread_mutex_unlock(&game_mutex);
+    if (set_cookie) {
+        char cookie_header[96];
+        snprintf(cookie_header, sizeof(cookie_header),
+            "Set-Cookie: wizard_player=%d; Path=/; HttpOnly; SameSite=Strict\r\n", client_player);
+        send_response_with_headers(client, 200, "OK", "application/json; charset=utf-8", cookie_header, body, strlen(body));
+    } else {
+        send_json(client, 200, "OK", body);
+    }
+}
+
+static int read_player_cookie(const char *request, const char *header_end) {
+    const char *line = request;
+    const char *key = "wizard_player=";
+    size_t key_length = strlen(key);
+    while (line < header_end) {
+        const char *line_end = strstr(line, "\r\n");
+        if (!line_end || line_end > header_end) break;
+        if (strncasecmp(line, "Cookie:", 7) == 0) {
+            const char *cursor = line + 7;
+            while (cursor < line_end) {
+                while (cursor < line_end && (*cursor == ' ' || *cursor == '\t' || *cursor == ';')) cursor++;
+                const char *value_end = memchr(cursor, ';', (size_t)(line_end - cursor));
+                if (!value_end) value_end = line_end;
+                while (value_end > cursor && (value_end[-1] == ' ' || value_end[-1] == '\t')) value_end--;
+                if ((size_t)(value_end - cursor) == key_length + 1 &&
+                    strncmp(cursor, key, key_length) == 0 && cursor[key_length] >= '0' &&
+                    cursor[key_length] < '0' + PLAYER_COUNT) {
+                    return cursor[key_length] - '0';
+                }
+                cursor = value_end < line_end ? value_end + 1 : line_end;
+            }
+        }
+        line = line_end + 2;
+    }
+    return -1;
+}
+
+static int claim_player(int requested_player, bool *new_cookie) {
+    pthread_mutex_lock(&game_mutex);
+    if (requested_player >= 0 && requested_player < PLAYER_COUNT) {
+        *new_cookie = !player_claimed[requested_player];
+        player_claimed[requested_player] = true;
+        pthread_mutex_unlock(&game_mutex);
+        return requested_player;
+    }
+    for (int i = 0; i < PLAYER_COUNT; i++) {
+        if (!player_claimed[i]) {
+            player_claimed[i] = true;
+            *new_cookie = true;
+            pthread_mutex_unlock(&game_mutex);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&game_mutex);
+    return -1;
 }
 
 static bool serve_asset(int client, const char *path) {
@@ -243,7 +310,7 @@ static bool serve_asset(int client, const char *path) {
     return true;
 }
 
-static bool handle_action(const char *body, char *error, size_t error_capacity) {
+static bool handle_action(int player_index, const char *body, char *error, size_t error_capacity) {
     char action[32];
     char direction[16];
     if (!read_json_string(body, "type", action, sizeof(action))) {
@@ -254,8 +321,11 @@ static bool handle_action(const char *body, char *error, size_t error_capacity) 
         snprintf(error, error_capacity, "The game is over. Start a new game to play again.");
         return false;
     }
+    if (player_index != game.current_player) {
+        snprintf(error, error_capacity, "It is not your turn.");
+        return false;
+    }
 
-    int player_index = game.current_player;
     int opponent_index = other_player(player_index);
     Player *player = &game.players[player_index];
     Player *opponent = &game.players[opponent_index];
@@ -436,28 +506,57 @@ static void handle_client(int client) {
     if (sscanf(request, "%7s %127s", method, path) != 2) {
         send_json(client, 400, "Bad Request", "{\"error\":\"Malformed request.\"}");
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/state") == 0) {
-        send_state(client);
+        bool new_cookie = false;
+        int player = claim_player(read_player_cookie(request, header_end), &new_cookie);
+        if (player < 0) {
+            send_json(client, 503, "Service Unavailable", "{\"error\":\"Both player slots are in use.\"}");
+        } else {
+            send_state(client, player, new_cookie);
+        }
     } else if (strcmp(method, "GET") == 0) {
         if (!serve_asset(client, path)) {
             send_json(client, 404, "Not Found", "{\"error\":\"Not found.\"}");
         }
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/reset") == 0) {
-        reset_game();
-        send_state(client);
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/action") == 0) {
-        char error[160];
-        if (handle_action(header_end + 4, error, sizeof(error))) {
-            send_state(client);
+        int player = read_player_cookie(request, header_end);
+        if (player < 0) {
+            send_json(client, 401, "Unauthorized", "{\"error\":\"Join the game before resetting it.\"}");
         } else {
-            char escaped[320];
-            char response[400];
-            escape_json(error, escaped, sizeof(escaped));
-            snprintf(response, sizeof(response), "{\"error\":\"%s\"}", escaped);
-            send_json(client, 400, "Bad Request", response);
+            pthread_mutex_lock(&game_mutex);
+            reset_game();
+            pthread_mutex_unlock(&game_mutex);
+            send_state(client, player, false);
+        }
+    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/action") == 0) {
+        int player = read_player_cookie(request, header_end);
+        char error[160];
+        if (player < 0) {
+            send_json(client, 401, "Unauthorized", "{\"error\":\"Join the game before taking an action.\"}");
+        } else {
+            pthread_mutex_lock(&game_mutex);
+            bool action_succeeded = handle_action(player, header_end + 4, error, sizeof(error));
+            pthread_mutex_unlock(&game_mutex);
+            if (action_succeeded) {
+                send_state(client, player, false);
+            } else {
+                char escaped[320];
+                char response[400];
+                escape_json(error, escaped, sizeof(escaped));
+                snprintf(response, sizeof(response), "{\"error\":\"%s\"}", escaped);
+                send_json(client, 400, "Bad Request", response);
+            }
         }
     } else {
         send_json(client, 405, "Method Not Allowed", "{\"error\":\"Method or route not allowed.\"}");
     }
+}
+
+static void *client_thread(void *argument) {
+    int client = *(int *)argument;
+    free(argument);
+    handle_client(client);
+    close(client);
+    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -483,11 +582,7 @@ int main(int argc, char **argv) {
     struct sockaddr_in address = {0};
     address.sin_family = AF_INET;
     address.sin_port = htons((unsigned short)port);
-    if (inet_pton(AF_INET, "127.0.0.1", &address.sin_addr) != 1) {
-        fprintf(stderr, "Could not set loopback address.\n");
-        close(server);
-        return 1;
-    }
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(server, (struct sockaddr *)&address, sizeof(address)) < 0 || listen(server, 16) < 0) {
         perror("bind/listen");
         close(server);
@@ -495,7 +590,8 @@ int main(int argc, char **argv) {
     }
 
     reset_game();
-    printf("Arcane Labyrinth is ready at http://127.0.0.1:%d\n", port);
+    printf("Arcane Labyrinth is listening on port %d (all network interfaces).\n", port);
+    printf("Use http://127.0.0.1:%d locally or http://<this-computer-LAN-IP>:%d from another device.\n", port, port);
     fflush(stdout);
     for (;;) {
         int client = accept(server, NULL, NULL);
@@ -504,7 +600,20 @@ int main(int argc, char **argv) {
             perror("accept");
             continue;
         }
-        handle_client(client);
-        close(client);
+        int *client_argument = malloc(sizeof(*client_argument));
+        if (!client_argument) {
+            close(client);
+            continue;
+        }
+        *client_argument = client;
+        pthread_t thread;
+        int thread_error = pthread_create(&thread, NULL, client_thread, client_argument);
+        if (thread_error != 0) {
+            fprintf(stderr, "pthread_create: %s\n", strerror(thread_error));
+            free(client_argument);
+            close(client);
+            continue;
+        }
+        pthread_detach(thread);
     }
 }

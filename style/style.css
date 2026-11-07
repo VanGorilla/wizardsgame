@@ -59,6 +59,7 @@ button { font: inherit; color: inherit; }
 .side-panel { border-left: 1px solid var(--line); padding-left: 23px; }
 .active-panel { padding: 0 0 18px; border-bottom: 1px solid var(--line); }
 .active-panel h2 { font: 600 22px var(--serif); margin: 5px 0 14px; }
+.client-status { color: var(--muted); font: 10px var(--mono); margin: -7px 0 12px; }
 .resource-row { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; color: var(--muted); font-size: 12px; }
 .health-pips { display: flex; gap: 4px; }.health-pip { width: 9px; height: 9px; border: 1px solid var(--red); border-radius: 50%; }.health-pip.filled { background: var(--red); }
 .mana-mark, .action-count { color: var(--gold-bright); font: 11px var(--mono); }
